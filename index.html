@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Proctor - Secure Interview Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            background: #020617; 
+            color: #f8fafc;
+            overflow-x: hidden;
+        }
+
+        .status-pill {
+            @apply px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2;
+        }
+
+        .status-online { background: #064e3b; color: #34d399; }
+        .status-warning { background: #78350f; color: #fbbf24; border: 1px solid #d97706; }
+        .status-danger { background: #7f1d1d; color: #f87171; border: 1px solid #dc2626; }
+
+        .terminal-log {
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.5);
+        }
+
+        .video-container {
+            position: relative;
+            box-shadow: 0 0 50px -12px rgba(59, 130, 246, 0.25);
+        }
+
+        .scanning-effect::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(59, 130, 246, 0.5);
+            box-shadow: 0 0 15px #3b82f6;
+            animation: scan 4s linear infinite;
+        }
+
+        @keyframes scan {
+            0% { top: 0; opacity: 0; }
+            5% { opacity: 1; }
+            95% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        .modal-overlay {
+            background: rgba(2, 6, 23, 0.95);
+            backdrop-filter: blur(8px);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- Onboarding / Registration Modal -->
+    <div id="onboardingModal" class="fixed inset-0 z-[110] modal-overlay flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-3xl p-8 shadow-2xl">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center">
+                    <i class="fa-solid fa-id-card text-white text-xl"></i>
+                </div>
+                <div>
+                    <h2 class="text-2xl font-black tracking-tight">Candidate Profile</h2>
+                    <p class="text-slate-400 text-sm">Enter your details to initialize the secure session.</p>
+                </div>
+            </div>
+
+            <form id="onboardingForm" class="space-y-5">
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Full Name</label>
+                    <input type="text" id="inputName" required placeholder="e.g. Alex Thompson" 
+                        class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-white">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Email Address</label>
+                    <input type="email" id="inputEmail" required placeholder="alex@example.com" 
+                        class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-white">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Identification Number / ID</label>
+                    <input type="text" id="inputID" required placeholder="EMP-12345" 
+                        class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-white">
+                </div>
+
+                <button type="submit" class="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-bold transition-all mt-4 flex items-center justify-center gap-2">
+                    Verify & Proceed <i class="fa-solid fa-arrow-right"></i>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <nav class="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                    <i class="fa-solid fa-eye text-white text-xl"></i>
+                </div>
+                <span class="text-xl font-extrabold tracking-tight">AI<span class="text-blue-500">PROCTOR</span></span>
+            </div>
+            <div class="flex items-center gap-6">
+                <div id="connectionStatus" class="status-pill status-online">
+                    <span class="relative flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    System Live
+                </div>
+                <div class="h-6 w-px bg-slate-700"></div>
+                <div class="flex items-center gap-2 text-slate-400 text-sm">
+                    <i class="fa-solid fa-user-shield"></i>
+                    <span id="headerSessionId">Secure Session #8821</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        <!-- Left: Candidate Video Feed -->
+        <div class="lg:col-span-8 space-y-6">
+            <div class="video-container rounded-3xl overflow-hidden bg-slate-900 aspect-video relative border-2 border-slate-800" id="mainContainer">
+                <video id="inputVideo" class="w-full h-full object-cover" autoplay playsinline muted></video>
+                <canvas id="outputCanvas" class="absolute inset-0 w-full h-full"></canvas>
+                
+                <!-- HUD Overlay -->
+                <div class="absolute top-6 left-6 flex flex-col gap-2">
+                    <div class="bg-black/40 backdrop-blur-sm p-3 rounded-xl border border-white/10 flex items-center gap-3">
+                        <div class="text-xs font-bold text-slate-400">GAZE TRACKING</div>
+                        <div id="gazeIndicator" class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"></div>
+                    </div>
+                    <div class="bg-black/40 backdrop-blur-sm p-3 rounded-xl border border-white/10 flex items-center gap-3">
+                        <div class="text-xs font-bold text-slate-400">HEAD POSE</div>
+                        <div id="poseIndicator" class="text-xs font-mono text-blue-400">STABLE</div>
+                    </div>
+                </div>
+
+                <div class="scanning-effect"></div>
+            </div>
+
+            <!-- Controls & Session Info -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-slate-900/50 p-4 rounded-2xl border border-slate-800">
+                    <div class="text-xs font-bold text-slate-500 mb-1">CANDIDATE</div>
+                    <div id="displayCandidateName" class="font-semibold truncate">Not Registered</div>
+                </div>
+                <div class="bg-slate-900/50 p-4 rounded-2xl border border-slate-800">
+                    <div class="text-xs font-bold text-slate-500 mb-1">SESSION DURATION</div>
+                    <div id="timerDisplay" class="font-mono text-xl text-blue-400 font-bold">00:00:00</div>
+                </div>
+                <div class="bg-slate-900/50 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-bold text-slate-500 mb-1">VIOLATIONS</div>
+                        <div id="violationCount" class="text-2xl font-black text-white">0 / 2</div>
+                    </div>
+                    <div class="h-10 w-10 bg-red-500/10 rounded-full flex items-center justify-center text-red-500">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Proctor Log & Behavior Analysis -->
+        <div class="lg:col-span-4 flex flex-col gap-6">
+            <div class="bg-slate-900 rounded-3xl border border-slate-800 flex-1 flex flex-col overflow-hidden">
+                <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-800/20">
+                    <h2 class="font-bold flex items-center gap-2">
+                        <i class="fa-solid fa-list-check text-blue-400"></i>
+                        Live Behavior Log
+                    </h2>
+                    <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">HR Dashboard</span>
+                </div>
+                
+                <div id="behaviorLogs" class="flex-1 p-4 overflow-y-auto space-y-3 terminal-log text-[13px]">
+                    <div class="text-slate-500">[SYSTEM] Awaiting candidate registration...</div>
+                </div>
+
+                <div class="p-4 bg-slate-800/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <span class="text-xs font-bold text-slate-400">AI CONFIDENCE</span>
+                        <span class="text-xs font-mono text-emerald-400">98.4%</span>
+                    </div>
+                    <div class="w-full bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                        <div class="bg-blue-500 h-full w-[98.4%]"></div>
+                    </div>
+                </div>
+            </div>
+
+            <button id="btnStart" disabled class="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-bold transition-all shadow-xl shadow-blue-900/20 flex items-center justify-center gap-3 opacity-50 cursor-not-allowed">
+                <i class="fa-solid fa-play"></i> Start Interview
+            </button>
+        </div>
+    </main>
+
+    <!-- Warning Modal -->
+    <div id="warningModal" class="fixed inset-0 z-[100] modal-overlay flex items-center justify-center hidden p-4">
+        <div class="bg-slate-900 border border-amber-500/50 w-full max-w-md rounded-3xl p-8 shadow-2xl text-center">
+            <div class="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center text-amber-500 mx-auto mb-6 border-2 border-amber-500/20">
+                <i class="fa-solid fa-circle-exclamation text-4xl animate-pulse"></i>
+            </div>
+            <h2 class="text-2xl font-black mb-2 text-amber-500 uppercase tracking-tight">Warning Issued</h2>
+            <p id="warningDescription" class="text-slate-400 mb-8">System detected suspicious behavior. Please look directly at the screen.</p>
+            <button id="btnAcknowledge" class="w-full py-4 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl font-bold transition-all">
+                I Understand
+            </button>
+            <p class="mt-4 text-xs text-slate-500 uppercase font-bold">One attempt remaining</p>
+        </div>
+    </div>
+
+    <!-- Termination Modal -->
+    <div id="terminationModal" class="fixed inset-0 z-[101] modal-overlay flex items-center justify-center hidden p-4">
+        <div class="bg-slate-900 border border-red-500/50 w-full max-w-md rounded-3xl p-10 shadow-2xl text-center">
+            <div class="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center text-red-500 mx-auto mb-6 border-2 border-red-500/20">
+                <i class="fa-solid fa-user-xmark text-4xl"></i>
+            </div>
+            <h2 class="text-3xl font-black mb-2 text-red-500 uppercase tracking-tight">Disqualified</h2>
+            <p class="text-slate-400 mb-8">The session has been automatically terminated due to multiple policy violations. The HR team has been notified.</p>
+            <div class="p-4 bg-red-950/20 rounded-2xl border border-red-500/20 mb-8 text-left">
+                <div class="text-xs font-bold text-red-400 uppercase mb-1">Candidate Details</div>
+                <div id="terminationCandidateInfo" class="text-sm text-slate-300 mb-3 font-mono"></div>
+                <div class="text-xs font-bold text-red-400 uppercase mb-1">Primary Reason</div>
+                <div class="text-sm">Repeated evasion of facial monitoring system.</div>
+            </div>
+            <button onclick="window.location.reload()" class="text-slate-500 hover:text-white transition-all text-sm font-bold uppercase">
+                Exit System
+            </button>
+        </div>
+    </div>
+
+    <script type="module">
+        const apiKey = ""; // Runtime provides key
+        const videoElement = document.getElementById('inputVideo');
+        const canvasElement = document.getElementById('outputCanvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const behaviorLogs = document.getElementById('behaviorLogs');
+        const violationDisplay = document.getElementById('violationCount');
+        const timerDisplay = document.getElementById('timerDisplay');
+        const warningModal = document.getElementById('warningModal');
+        const terminationModal = document.getElementById('terminationModal');
+        const poseIndicator = document.getElementById('poseIndicator');
+        const gazeIndicator = document.getElementById('gazeIndicator');
+        
+        // Registration Elements
+        const onboardingModal = document.getElementById('onboardingModal');
+        const onboardingForm = document.getElementById('onboardingForm');
+        const displayCandidateName = document.getElementById('displayCandidateName');
+        const btnStart = document.getElementById('btnStart');
+
+        let candidateData = null;
+        let violations = 0;
+        let isSessionActive = false;
+        let lastBehaviorCheck = Date.now();
+        let sessionStartTime = null;
+        let warningActive = false;
+        let headAwayCounter = 0;
+
+        // --- ONBOARDING LOGIC ---
+        onboardingForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            candidateData = {
+                name: document.getElementById('inputName').value,
+                email: document.getElementById('inputEmail').value,
+                id: document.getElementById('inputID').value
+            };
+
+            // UI Updates
+            displayCandidateName.innerText = candidateData.name;
+            onboardingModal.classList.add('hidden');
+            btnStart.disabled = false;
+            btnStart.classList.remove('opacity-50', 'cursor-not-allowed');
+            
+            addLog(`Candidate Registered: ${candidateData.name} (${candidateData.id})`);
+            addLog(`Ready to begin biometric handshake...`);
+        });
+
+        // --- UI UTILS ---
+        function addLog(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const log = document.createElement('div');
+            log.className = type === 'violation' ? 'text-red-400 font-bold' : 'text-slate-400';
+            log.innerHTML = `<span class="text-slate-600">[${time}]</span> ${msg}`;
+            behaviorLogs.appendChild(log);
+            behaviorLogs.scrollTop = behaviorLogs.scrollHeight;
+        }
+
+        function updateTimer() {
+            if (!isSessionActive) return;
+            const now = Date.now();
+            const diff = new Date(now - sessionStartTime);
+            const h = String(diff.getUTCHours()).padStart(2, '0');
+            const m = String(diff.getUTCMinutes()).padStart(2, '0');
+            const s = String(diff.getUTCSeconds()).padStart(2, '0');
+            timerDisplay.innerText = `${h}:${m}:${s}`;
+        }
+
+        function triggerViolation(reason) {
+            if (!isSessionActive || warningActive) return;
+            
+            violations++;
+            violationDisplay.innerText = `${violations} / 2`;
+            addLog(`VIOLATION: ${reason}`, 'violation');
+
+            if (violations === 1) {
+                warningActive = true;
+                document.getElementById('warningDescription').innerText = `Suspicious behavior detected: ${reason}`;
+                warningModal.classList.remove('hidden');
+                document.getElementById('connectionStatus').className = "status-pill status-warning";
+            } else if (violations >= 2) {
+                isSessionActive = false;
+                document.getElementById('terminationCandidateInfo').innerText = 
+                    `NAME: ${candidateData.name}\nEMAIL: ${candidateData.email}\nID: ${candidateData.id}`;
+                terminationModal.classList.remove('hidden');
+                document.getElementById('connectionStatus').className = "status-pill status-danger";
+            }
+        }
+
+        // --- MEDIAPIPE FACE MESH ---
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+        });
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults((results) => {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                headAwayCounter = 0; 
+                
+                const nose = landmarks[1];
+                const leftEye = landmarks[33];
+                const rightEye = landmarks[263];
+                
+                const isLookingSideways = Math.abs(nose.x - (leftEye.x + rightEye.x)/2) > 0.05;
+                
+                if (isSessionActive && !warningActive) {
+                    if (isLookingSideways) {
+                        poseIndicator.innerText = "SUSPICIOUS";
+                        poseIndicator.className = "text-xs font-mono text-amber-500";
+                        gazeIndicator.className = "h-2 w-2 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                        
+                        if (Date.now() - lastBehaviorCheck > 3000) {
+                            triggerViolation("Inconsistent gaze/Looking away.");
+                            lastBehaviorCheck = Date.now();
+                        }
+                    } else {
+                        poseIndicator.innerText = "STABLE";
+                        poseIndicator.className = "text-xs font-mono text-emerald-400";
+                        gazeIndicator.className = "h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
+                    }
+                }
+
+                // Draw Eye tracking points
+                canvasCtx.fillStyle = "rgba(59, 130, 246, 0.4)";
+                [468, 473].forEach(idx => {
+                    const p = landmarks[idx];
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(p.x * canvasElement.width, p.y * canvasElement.height, 4, 0, 2 * Math.PI);
+                    canvasCtx.fill();
+                });
+
+            } else {
+                if (isSessionActive && !warningActive) {
+                    headAwayCounter++;
+                    if (headAwayCounter > 60) { 
+                        triggerViolation("Face moved out of camera frame.");
+                        headAwayCounter = 0;
+                    }
+                }
+            }
+            canvasCtx.restore();
+        });
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+
+        // --- BUTTON HANDLERS ---
+        btnStart.addEventListener('click', async () => {
+            canvasElement.width = videoElement.videoWidth || 640;
+            canvasElement.height = videoElement.videoHeight || 480;
+            
+            try {
+                await camera.start();
+                isSessionActive = true;
+                sessionStartTime = Date.now();
+                btnStart.disabled = true;
+                btnStart.classList.add('opacity-50');
+                addLog("Interview session initialized.");
+                addLog(`Monitoring active for ${candidateData.name}.`);
+                setInterval(updateTimer, 1000);
+            } catch (e) {
+                alert("Camera access is required for proctoring.");
+            }
+        });
+
+        document.getElementById('btnAcknowledge').addEventListener('click', () => {
+            warningModal.classList.add('hidden');
+            warningActive = false;
+            lastBehaviorCheck = Date.now();
+            addLog("Candidate acknowledged warning.");
+        });
+
+    </script>
+</body>
+</html>
